@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { ZoomIn, ZoomOut, RefreshCw, Eye, Sliders, Activity, TrendingUp, Instagram } from 'lucide-react';
+import { ZoomIn, ZoomOut, RefreshCw, Eye, Sliders, Activity, TrendingUp } from "lucide-react";
 
-const WienerProcessExplorer = () => {
+const App = () => {
   // ---------------------------------------------------------------------------
   // 自動注入 Tailwind CSS (確保在獨立環境中格式完美)
   // ---------------------------------------------------------------------------
@@ -585,8 +585,22 @@ const WienerProcessExplorer = () => {
           rel="noopener noreferrer"
           className="flex items-center gap-2 px-4 py-2 bg-slate-950 border border-slate-800 rounded-full shadow-md text-slate-400 hover:text-pink-400 hover:border-pink-500/30 transition-all duration-300 text-xs font-semibold group"
         >
-          <Instagram className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-          <span>Follow Theoretical Finance on IG: <span className="font-bold text-slate-200 group-hover:text-pink-400">@isjustfinance_</span></span>
+          {/* 使用原生 SVG 替代 Lucide 圖標，避開打包錯誤 */}
+          <svg
+            xmlns="http://www.w3.org/2000/svg" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round" 
+                className="w-3.5 h-3.5 group-hover:scale-110 transition-transform"
+            >
+               <rect width="20" height="20" x="2" y="2" rx="5" ry="5"/>
+               <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+               <line x1="17.5" x2="17.51" y1="6.5" y2="6.5"/>
+            </svg>
+            <span>Follow Theoretical Finance on IG: <span className="font-bold text-slate-200 group-hover:text-pink-400">@isjustfinance_</span></span>
         </a>
       </div>
 
