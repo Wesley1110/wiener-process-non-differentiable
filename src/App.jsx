@@ -438,14 +438,14 @@ const App = () => {
                   </g>
                 ))}
 
-                {/* W(t) = 0 基準水平線 (僅在標準維納過程模式下顯示) */}
-                {!isGBM && (
+                {/* W(t) = 0 基準水平線 (僅在標準維納過程模式下顯示，加入了陣列長度安全防禦) */}
+                {!isGBM && chartData.ticksY && chartData.ticksY.length === 5 && (
                   <line 
                     x1="0" 
-                    y1={dimensions.height - ((-chartData.ticksY[0].label) / (chartData.ticksY[4].label - chartData.ticksY[0].label)) * dimensions.height} 
+                    y1={dimensions.height - ((-parseFloat(chartData.ticksY[0].label)) / (parseFloat(chartData.ticksY[4].label) - parseFloat(chartData.ticksY[0].label))) * dimensions.height} 
                     x2={dimensions.width} 
-                    y2={dimensions.height - ((-chartData.ticksY[0].label) / (chartData.ticksY[4].label - chartData.ticksY[0].label)) * dimensions.height} 
-                    stroke="rgba(244,63,94,0.15)" 
+                    y2={dimensions.height - ((-parseFloat(chartData.ticksY[0].label)) / (parseFloat(chartData.ticksY[4].label) - parseFloat(chartData.ticksY[0].label))) * dimensions.height} 
+                    stroke="rgba(244,63,94,0.25)" 
                     strokeWidth="1.5"
                   />
                 )}
