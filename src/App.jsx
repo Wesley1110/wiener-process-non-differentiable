@@ -131,11 +131,11 @@ const App = () => {
   }, [svgRef]);
 
   // ---------------------------------------------------------------------------
-  // 核心數據計算：映射、邊界、統計邊界、微觀斜率
+  // 核心數據計算：映射、邊界、統計邊界、微觀局部斜率與標記點位置
   // ---------------------------------------------------------------------------
   const chartData = useMemo(() => {
     const rawPoints = pointsRef.current;
-    if (rawPoints.length < 2) return { pathD: "", bandsD: "", ticksX: [], ticksY: [], localSlope: 0, currentScale: 1 };
+    if (rawPoints.length < 2) return { pathD: "", bandsD: "", ticksX: [], ticksY: [], localSlope: 0, slopePoints: null, currentScale: 1 };
 
     // 1. 根據目前模式 (Wiener 或是 GBM) 將原始路徑進行動態數學映射
     const mappedPoints = rawPoints.map(p => {
@@ -165,7 +165,7 @@ const App = () => {
       }
     }
 
-    if (visiblePoints.length < 2) return { pathD: "", bandsD: "", ticksX: [], ticksY: [], localSlope: 0, currentScale: 1 };
+    if (visiblePoints.length < 2) return { pathD: "", bandsD: "", ticksX: [], ticksY: [], localSlope: 0, slopePoints: null, currentScale: 1 };
 
     // 給予上下邊界適度緩衝 (Padding)
     const padding = (max - min) * 0.15 || 0.1;
@@ -191,8 +191,8 @@ const App = () => {
       let upperPoints = [];
       let lowerPoints = [];
       
-      // 在可視區間內均勻取點計算理論擴存邊界
-      const sampleCount = 40;
+      // 在可視區間內均勻取點計算理論擴散邊界
+      const sampleCount = 60;
       for (let k = 0; k <= sampleCount; k++) {
         const t = viewWindow.start + (timeRange * k) / sampleCount;
         if (t === 0) {
@@ -204,32 +204,33 @@ const App = () => {
         
         let uY, lY;
         if (!isGBM) {
-          // Standard Wiener Bound: \pm 2 * \sqrt{t}
-          const bound = 2 * Math.sqrt(t);
+          // Standard Wiener Bound: \pm 1.96 * \sqrt{t}
+          const bound = 1.96 * Math.sqrt(t);
           uY = bound;
           lY = -bound;
         } else {
-          // GBM Confidence Bounds: S_0 * exp(mu*t \pm 2*sigma*\sqrt{t})
-          uY = initialPrice * Math.exp(mu * t + 2 * sigma * Math.sqrt(t));
-          lY = initialPrice * Math.exp(mu * t - 2 * sigma * Math.sqrt(t));
+          // GBM Confidence Bounds: S_0 * exp(mu*t \pm 1.96*sigma*\sqrt{t})
+          uY = initialPrice * Math.exp(mu * t + 1.96 * sigma * Math.sqrt(t));
+          lY = initialPrice * Math.exp(mu * t - 1.96 * sigma * Math.sqrt(t));
         }
         upperPoints.push({ t, y: uY });
         lowerPoints.unshift({ t, y: lY });
       }
 
+      // 呈現真實數學位置，不再對邊界 Y 軸進行強制物理裁剪
       const combinedBands = [...upperPoints, ...lowerPoints];
       combinedBands.forEach((p, i) => {
         const x = ((p.t - viewWindow.start) / timeRange) * width;
-        let yVal = Math.max(min, Math.min(max, p.y));
-        const y = height - ((yVal - min) / valRange) * height;
+        const y = height - ((p.y - min) / valRange) * height;
         if (i === 0) bandsD += `M ${x.toFixed(1)} ${y.toFixed(1)}`;
         else bandsD += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
       });
       bandsD += " Z";
     }
 
-    // 5. 即時計算窗口正中央的「微觀斜率」Delta Y / Delta T (見證不可微)
+    // 5. 即時計算窗口正中央的「微觀局部斜率」與觀測標記點坐標
     let localSlope = 0;
+    let slopePoints = null;
     const midIndex = Math.floor(visiblePoints.length / 2);
     if (midIndex > 0 && midIndex < visiblePoints.length - 1) {
       const pLeft = visiblePoints[midIndex];
@@ -237,6 +238,17 @@ const App = () => {
       const dt = pRight.t - pLeft.t;
       if (dt > 0) {
         localSlope = (pRight.y - pLeft.y) / dt;
+
+        // 計算這兩點對應在 SVG 畫布上的實際 (X, Y) 像素位置
+        const x1 = ((pLeft.t - viewWindow.start) / timeRange) * width;
+        const y1 = height - ((pLeft.y - min) / valRange) * height;
+        const x2 = ((pRight.t - viewWindow.start) / timeRange) * width;
+        const y2 = height - ((pRight.y - min) / valRange) * height;
+
+        slopePoints = {
+          p1: { x: x1, y: y1, t: pLeft.t, valY: pLeft.y },
+          p2: { x: x2, y: y2, t: pRight.t, valY: pRight.y }
+        };
       }
     }
 
@@ -251,36 +263,62 @@ const App = () => {
       return { y: height - (i * height) / 4, label: val.toFixed(isGBM ? 2 : 3) };
     });
 
-    return { pathD, bandsD, ticksX, ticksY, localSlope, currentScale: 1 / timeRange };
+    return { pathD, bandsD, ticksX, ticksY, localSlope, slopePoints, currentScale: 1 / timeRange };
   }, [version, viewWindow, dimensions, isGBM, mu, sigma, initialPrice, showBands]);
 
   // ---------------------------------------------------------------------------
-  // 縮放與拖拽互動邏輯 (Zoom & Pan)
+  // 利用原生 DOM 監聽，非被動(non-passive)地阻止滾輪捲動網頁
   // ---------------------------------------------------------------------------
-  const doZoom = (factor, mouseClientX) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const clickX = mouseClientX - rect.left;
-    const width = rect.width;
-    
-    const currentSpan = viewWindow.end - viewWindow.start;
-    const clickT = viewWindow.start + (clickX / width) * currentSpan;
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
 
-    const newSpan = currentSpan * factor;
-    let newStart = clickT - newSpan * (clickX / width);
-    let newEnd = newStart + newSpan;
+    const preventDefaultWheel = (e) => {
+      e.preventDefault(); // 完美阻擋整個瀏覽器頁面滾動
+      
+      const scaleFactor = e.deltaY > 0 ? 1.15 : 0.85;
+      const rect = svgEl.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const width = rect.width;
 
-    if (newStart < 0) { newEnd -= newStart; newStart = 0; }
-    if (newEnd > 1) { newStart -= (newEnd - 1); newEnd = 1; }
-    if (newEnd - newStart > 1) { newStart = 0; newEnd = 1; }
+      setViewWindow(curr => {
+        const currentSpan = curr.end - curr.start;
+        const clickT = curr.start + (clickX / width) * currentSpan;
 
-    setViewWindow({ start: newStart, end: newEnd });
+        const newSpan = currentSpan * scaleFactor;
+        let newStart = clickT - newSpan * (clickX / width);
+        let newEnd = newStart + newSpan;
+
+        if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+        if (newEnd > 1) { newStart -= (newEnd - 1); newEnd = 1; }
+        if (newEnd - newStart > 1) { newStart = 0; newEnd = 1; }
+
+        return { start: Math.max(0, newStart), end: Math.min(1, newEnd) };
+      });
+    };
+
+    svgEl.addEventListener('wheel', preventDefaultWheel, { passive: false });
+    return () => {
+      svgEl.removeEventListener('wheel', preventDefaultWheel);
+    };
+  }, [dimensions]);
+
+  // ---------------------------------------------------------------------------
+  // 參數互動優化：使用者拖動任何滑桿時，自動平滑切換至 GBM 模式，避免卡死
+  // ---------------------------------------------------------------------------
+  const handleMuChange = (val) => {
+    setMu(val);
+    setIsGBM(true);
   };
 
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const scaleFactor = e.deltaY > 0 ? 1.15 : 0.85;
-    doZoom(scaleFactor, e.clientX);
+  const handleSigmaChange = (val) => {
+    setSigma(val);
+    setIsGBM(true);
+  };
+
+  const handleInitialPriceChange = (val) => {
+    setInitialPrice(val);
+    setIsGBM(true);
   };
 
   // 拖拽平移 (Pan) 實作
@@ -326,54 +364,85 @@ const App = () => {
     <div className="w-full max-w-6xl mx-auto p-4 md:p-6 font-sans bg-slate-900 text-slate-100 min-h-screen selection:bg-emerald-500 selection:text-black">
       
       {/* 標頭儀表板 */}
-      <header className="mb-6 border-b border-slate-800 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 text-emerald-400 font-mono text-xs font-bold tracking-widest uppercase bg-emerald-500/10 px-2.5 py-1 rounded-full w-fit mb-2">
-            <Activity className="w-3.5 h-3.5 animate-pulse" /> Advanced Financial Analytics
+      <header className="mb-8 border-b border-slate-800 pb-6">
+        {/* 標頭第一行：主標題與快速切換按鈕 */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-black text-white">
+              股價不可微分性質的視覺化展示
+            </h1>
+            <p className="text-sm text-slate-400 mt-1">Visualizing the Non-Differentiable Nature of Stock Prices</p>
           </div>
-          <h1 className="text-2xl md:text-3xl font-black tracking-tight">
-            維納過程與隨機分析視覺化實驗室
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            動態布朗橋碎形構造模型：驗證資產價格之「處處不可微分」與「無限變異」性質。
-          </p>
+          
+          {/* 快速切換器 */}
+          <div className="bg-slate-950/80 p-1.5 rounded-xl border border-slate-800 flex gap-1 h-fit w-fit self-start md:self-center shadow-inner">
+            <button 
+              onClick={() => setIsGBM(false)}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${!isGBM ? 'bg-emerald-500 text-slate-950 shadow-md font-black' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              標準維納過程 W(t)
+            </button>
+            <button 
+              onClick={() => setIsGBM(true)}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${isGBM ? 'bg-sky-500 text-slate-950 shadow-md font-black' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              幾何布朗運動 S(t)
+            </button>
+          </div>
         </div>
+        
+        {/*性質說明區塊 */}
+        <div className="bg-slate-950/60 border-l-4 border-emerald-500 p-5 rounded-r-xl text-slate-300 space-y-4 shadow-xl">
+          <p className="text-slate-200">
+            股價服從 <strong>Wiener Process (維納過程)</strong>，它具有兩個非常反直觀、一般人難以想像的性質：
+          </p>
+          
+          <div className="space-y-4">
+            <div className="bg-slate-900/80 p-4 rounded-xl border border-emerald-500/20 shadow-md">
+              <h3 className="text-emerald-400 font-bold text-lg mb-1.5 flex items-center gap-2">
+                <span className="bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded text-sm font-mono">1</span>
+                Jagged path (Not monotone in any interval)
+              </h3>
+              <p className="text-slate-300 pl-4 border-l-4 border-emerald-500/40">
+                路徑鋸齒狀：在任何極小的時間區間內，股價都不是單調的（非單純上漲或下跌），而是劇烈震盪。
+              </p>
+            </div>
 
-        {/* 快速切換器 */}
-        <div className="bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 flex gap-1 h-fit w-fit self-end md:self-center">
-          <button 
-            onClick={() => { setIsGBM(false); }}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${!isGBM ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            標準維納過程 W(t)
-          </button>
-          <button 
-            onClick={() => { setIsGBM(true); }}
-            className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${isGBM ? 'bg-emerald-500 text-slate-950 shadow' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            幾何布朗運動 S(t)
-          </button>
+            <div className="bg-slate-900/80 p-4 rounded-xl border border-rose-500/20 shadow-md">
+              <h3 className="text-rose-400 font-bold text-lg mb-1.5 flex items-center gap-2">
+                <span className="bg-rose-500/10 text-rose-400 px-2.5 py-0.5 rounded text-sm font-mono">2</span>
+                Non-differentiable everywhere
+              </h3>
+              <p className="text-slate-300 pl-4 border-l-4 border-rose-500/40">
+                處處不可微分：因為圖形充滿了無窮無盡的尖角 (Edge)，你無法在任何一點畫出唯一的切線。
+              </p>
+            </div>
+          </div>
+
+          <p className="text-xs text-slate-400 pt-3 border-t border-slate-800/80 mt-3">
+            這個程式利用「碎形生成」來模擬這種無窮細節。請試著在下方的圖表中，利用<strong>滾輪滾動、或用按鈕放大</strong>，你會發現無論放大幾萬倍，它永遠都是鋸齒狀的，永遠無法變成一條光滑的直線。
+          </p>
         </div>
       </header>
 
-      {/* 主工作區：左側圖表，右側控制台 */}
+      {/* 主工作區 */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         
         {/* 左側：核心模擬圖表 */}
         <div className="lg:col-span-3 flex flex-col gap-3">
           
           {/* 量化監測數據條 */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 font-mono text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 font-mono text-xs shadow-md">
             <div className="p-2 bg-slate-900/50 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-0.5">時間窗口 (Time Window)</span>
-              <span className="text-slate-200 font-semibold">[{viewWindow.start.toFixed(4)}, {viewWindow.end.toFixed(4)}]</span>
+              <span className="text-slate-200 font-semibold">[{viewWindow.start.toFixed(4)} year, {viewWindow.end.toFixed(4)} year]</span>
             </div>
             <div className="p-2 bg-slate-900/50 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-0.5">放大倍率 (Zoom Scale)</span>
               <span className="text-emerald-400 font-bold">{chartData.currentScale.toExponential(2)}x</span>
             </div>
             <div className="p-2 bg-slate-900/50 rounded-lg border border-slate-800 col-span-2 overflow-hidden">
-              <span className="text-slate-500 block mb-0.5">中央微觀斜率 (Local Slope: ΔY/ΔT)</span>
+              <span className="text-slate-500 block mb-0.5">微觀局部斜率 (Local Slope: ΔY/ΔT)</span>
               <span className={`font-bold transition-all truncate block ${Math.abs(chartData.localSlope) > 1000 ? 'text-rose-400 animate-pulse' : 'text-amber-400'}`}>
                 {chartData.localSlope === 0 ? "Computing..." : chartData.localSlope.toLocaleString(undefined, {maximumFractionDigits:2})}
               </span>
@@ -386,9 +455,9 @@ const App = () => {
             className="h-[440px] w-full border border-slate-800 bg-slate-950 rounded-xl overflow-hidden shadow-2xl relative select-none"
           >
             {/* 圖表背景浮水印刻度 */}
-            <div className="absolute top-4 left-4 z-10 pointer-events-none bg-slate-900/80 backdrop-blur px-3 py-2 rounded-lg border border-slate-800/60">
+            <div className="absolute top-4 left-4 z-10 pointer-events-none bg-slate-900/90 backdrop-blur-sm px-3 py-2 rounded-lg border border-slate-800/60 shadow">
               <h2 className="text-slate-300 font-bold text-xs tracking-wider uppercase">
-                {isGBM ? "Geometric Brownian Motion Simulation" : "Wiener Process Simulation"}
+                {isGBM ? "Geometric Brownian Motion" : "Wiener Process (W_t)"}
               </h2>
             </div>
 
@@ -396,14 +465,13 @@ const App = () => {
             <div 
               ref={svgRef}
               className="w-full h-full relative cursor-crosshair"
-              onWheel={handleWheel}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUpOrLeave}
               onMouseLeave={handleMouseUpOrLeave}
             >
               <svg width="100%" height="100%" className="overflow-visible">
-                {/* 背景網格網 */}
+                {/* 背景網格線 */}
                 <defs>
                   <pattern id="grid-pattern" width="50" height="50" patternUnits="userSpaceOnUse">
                     <path d="M 50 0 L 0 0 0 50" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="1"/>
@@ -415,9 +483,9 @@ const App = () => {
                 {showBands && chartData.bandsD && (
                   <path 
                     d={chartData.bandsD}
-                    fill="rgba(16, 185, 129, 0.04)"
-                    stroke="rgba(16, 185, 129, 0.15)"
-                    strokeWidth="1"
+                    fill="rgba(16, 185, 129, 0.08)"
+                    stroke="rgba(16, 185, 129, 0.35)"
+                    strokeWidth="1.2"
                     strokeDasharray="4,4"
                   />
                 )}
@@ -434,11 +502,11 @@ const App = () => {
                 {chartData.ticksX.map((tick, i) => (
                   <g key={`x-${i}`} className="opacity-40 font-mono text-[10px]">
                     <line x1={tick.x} y1="0" x2={tick.x} y2={dimensions.height} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-                    <text x={tick.x + 4} y={dimensions.height - 6} fill="#94a3b8" textAnchor="start">t = {tick.label}</text>
+                    <text x={tick.x + 4} y={dimensions.height - 6} fill="#94a3b8" textAnchor="start">t = {tick.label} y</text>
                   </g>
                 ))}
 
-                {/* W(t) = 0 基準水平線 (僅在標準維納過程模式下顯示，加入了陣列長度安全防禦) */}
+                {/* W(t) = 0 基準水平線 */}
                 {!isGBM && chartData.ticksY && chartData.ticksY.length === 5 && (
                   <line 
                     x1="0" 
@@ -459,29 +527,116 @@ const App = () => {
                   strokeLinejoin="round"
                   className="drop-shadow-[0_0_6px_rgba(16,185,129,0.3)]"
                 />
+
+                {/* 5. 即時高光標記：繪製微觀局部斜率計算的兩顆觀測點及其微觀割線 */}
+                {chartData.slopePoints && (
+                  <g>
+                    {/* 微觀割線 (連接這兩點的黃色切線段) */}
+                    <line 
+                      x1={chartData.slopePoints.p1.x} 
+                      y1={chartData.slopePoints.p1.y} 
+                      x2={chartData.slopePoints.p2.x} 
+                      y2={chartData.slopePoints.p2.y} 
+                      stroke="#fbbf24" /* 亮琥珀黃 */
+                      strokeWidth="3"
+                      className="drop-shadow-[0_0_6px_rgba(251,191,36,0.9)]"
+                    />
+                    
+                    {/* 左觀測點的外擴散動態脈衝圈 */}
+                    <circle 
+                      cx={chartData.slopePoints.p1.x} 
+                      cy={chartData.slopePoints.p1.y} 
+                      r="9" 
+                      fill="none"
+                      stroke="#ef4444" /* 亮紅 */
+                      strokeWidth="1.5"
+                      className="animate-ping opacity-75"
+                    />
+                    {/* 左觀測點實體圓心 */}
+                    <circle 
+                      cx={chartData.slopePoints.p1.x} 
+                      cy={chartData.slopePoints.p1.y} 
+                      r="4.5" 
+                      fill="#ef4444" 
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      className="drop-shadow-[0_0_6px_rgba(239,68,68,0.9)]"
+                    />
+
+                    {/* 右觀測點的外擴散動態脈衝圈 */}
+                    <circle 
+                      cx={chartData.slopePoints.p2.x} 
+                      cy={chartData.slopePoints.p2.y} 
+                      r="9" 
+                      fill="none"
+                      stroke="#ef4444" 
+                      strokeWidth="1.5"
+                      className="animate-ping opacity-75"
+                    />
+                    {/* 右觀測點實體圓心 */}
+                    <circle 
+                      cx={chartData.slopePoints.p2.x} 
+                      cy={chartData.slopePoints.p2.y} 
+                      r="4.5" 
+                      fill="#ef4444" 
+                      stroke="#ffffff"
+                      strokeWidth="1.5"
+                      className="drop-shadow-[0_0_6px_rgba(239,68,68,0.9)]"
+                    />
+
+                    {/* 教學文字標記 (微型導線與提示，僅在放大到一定程度時顯示，避免極端壓縮下文字重疊) */}
+                    {chartData.currentScale > 10 && (
+                      <g className="font-mono text-[9px] font-bold fill-amber-300">
+                        <text 
+                          x={chartData.slopePoints.p1.x} 
+                          y={chartData.slopePoints.p1.y - 14} 
+                          textAnchor="middle"
+                          className="drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
+                        >
+                          t1
+                        </text>
+                        <text 
+                          x={chartData.slopePoints.p2.x} 
+                          y={chartData.slopePoints.p2.y - 14} 
+                          textAnchor="middle"
+                          className="drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
+                        >
+                          t2
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                )}
               </svg>
             </div>
 
-            {/* 互動溫馨小提示 */}
-            <div className="absolute bottom-4 right-4 text-slate-500 text-[11px] font-mono pointer-events-none bg-slate-900/90 px-2.5 py-1 rounded border border-slate-800">
+            {/* 溫馨小提示 */}
+            <div className="absolute bottom-4 right-4 text-slate-500 text-[11px] font-mono pointer-events-none bg-slate-900/95 px-2.5 py-1 rounded border border-slate-800 shadow">
               🖱️ 滾輪/雙指縮放 | 👆 左右拖拽平移畫布
             </div>
           </div>
         </div>
 
-        {/* 右側：高階參數控制面板 */}
+        {/* 右側：高階參數設定面板 */}
         <div className="flex flex-col gap-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800/80">
           <div>
             <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-3">
-              <Sliders className="w-4 h-4 text-emerald-400" /> 參數控制台
+              <Sliders className="w-4 h-4 text-emerald-400" /> 參數設定
             </h3>
             
             <div className="space-y-4 font-mono text-xs">
               
               {/* GBM專屬參數面板 */}
-              <div className={`space-y-4 p-3 rounded-lg border bg-slate-900/40 transition-all ${isGBM ? 'border-sky-500/30' : 'border-slate-800 opacity-40 pointer-events-none'}`}>
-                <div className="flex items-center gap-1.5 text-sky-400 font-bold mb-1">
-                  <TrendingUp className="w-3.5 h-3.5" /> 幾何布朗運動參數
+              <div className={`space-y-4 p-3 rounded-lg border bg-slate-900/40 transition-all ${isGBM ? 'border-sky-500/40 shadow-md ring-1 ring-sky-500/20' : 'border-slate-800/80'}`}>
+                <div className="flex items-center justify-between gap-1.5 text-sky-400 font-bold mb-1">
+                  <span className="flex items-center gap-1.5">
+                    <TrendingUp className="w-3.5 h-3.5" /> 幾何布朗運動參數
+                  </span>
+                  {!isGBM && (
+                    <span className="text-[9px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-normal animate-pulse">
+                      調整即啟用 GBM
+                    </span>
+                  )}
                 </div>
                 
                 <div>
@@ -491,8 +646,8 @@ const App = () => {
                   </div>
                   <input 
                     type="range" min="-0.5" max="0.8" step="0.05" value={mu} 
-                    onChange={(e) => setMu(parseFloat(e.target.value))}
-                    className="w-full accent-sky-400"
+                    onChange={(e) => handleMuChange(parseFloat(e.target.value))}
+                    className="w-full accent-sky-400 cursor-pointer"
                   />
                 </div>
 
@@ -503,8 +658,8 @@ const App = () => {
                   </div>
                   <input 
                     type="range" min="0.05" max="0.8" step="0.05" value={sigma} 
-                    onChange={(e) => setSigma(parseFloat(e.target.value))}
-                    className="w-full accent-sky-400"
+                    onChange={(e) => handleSigmaChange(parseFloat(e.target.value))}
+                    className="w-full accent-sky-400 cursor-pointer"
                   />
                 </div>
 
@@ -515,8 +670,8 @@ const App = () => {
                   </div>
                   <input 
                     type="range" min="10" max="200" step="5" value={initialPrice} 
-                    onChange={(e) => setInitialPrice(parseInt(e.target.value))}
-                    className="w-full accent-sky-400"
+                    onChange={(e) => handleInitialPriceChange(parseInt(e.target.value))}
+                    className="w-full accent-sky-400 cursor-pointer"
                   />
                 </div>
               </div>
@@ -559,19 +714,19 @@ const App = () => {
       </div>
 
       {/* 學術補充說明註解區 */}
-      <footer className="mt-6 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 text-xs text-slate-400 space-y-3">
+      <footer className="mt-6 bg-slate-950/60 p-5 rounded-xl border border-slate-800/80 text-xs text-slate-400 space-y-3 shadow-lg">
         <h4 className="font-bold text-slate-200 text-sm flex items-center gap-1.5">
-          <Eye className="w-4 h-4 text-emerald-400" /> 隨機分析與統計性質學術備忘錄 (Technical Insights)
+          <Eye className="w-4 h-4 text-emerald-400" /> Technical Insights
         </h4>
-        <p>
-          當你不斷使用滑鼠滾輪放大本圖表時，你可以清晰觀測到隨機漫步的<strong>自相似性（Self-similarity）</strong>。本程式的「中央微觀斜率監測儀」會隨著時間跨度 $\Delta T \to 0$ 的縮小，呈現出斜率隨機跳動幅度呈指數型級數暴增（$\pm \infty$ 振盪）的現象，這在數學上具體展現了布朗運動<strong>處處連續但處處不可微分（Continuous but nowhere differentiable）</strong>的著名經典定理。
+        <p className="leading-relaxed">
+          當你不斷使用滑鼠滾輪放大本圖表時，可以清晰觀測到隨機漫步的<strong>自相似性 (Self-similarity)</strong>。本程式的「<strong>微觀局部斜率監測儀</strong>」會隨著時間跨度 ΔT → 0 的縮小，呈現出斜率隨機跳動幅度呈指數型級數暴增 (±∞ 振盪) 的現象，這在數學上具體展現了布朗運動<strong>處處連續但處處不可微分 (Continuous but nowhere differentiable)</strong>的著名經典定理。
         </p>
         <p className="font-mono bg-slate-900 p-2.5 rounded border border-slate-800 text-slate-300 leading-relaxed">
           <strong>幾何布朗運動 (GBM) 邊界方程：</strong> 
           <br />
-          Upper Band = S₀ · exp(μt + 2σ√t) 
+          Upper Band = S0 · exp(μt + 1.96σ√t) 
           <br />
-          Lower Band = S₀ · exp(μt - 2σ√t)
+          Lower Band = S0 · exp(μt - 1.96σ√t)
           <br />
           由於波動雜訊幅度的擴散擴張速度與時間開根號 (√t) 成正比，在微觀下其速度遠快於與時間 (t) 成正比的漂移項，這正是導致微觀路徑無限崎嶇且處處不可微的數學源頭。
         </p>
@@ -585,22 +740,22 @@ const App = () => {
           rel="noopener noreferrer"
           className="flex items-center gap-2 px-4 py-2 bg-slate-950 border border-slate-800 rounded-full shadow-md text-slate-400 hover:text-pink-400 hover:border-pink-500/30 transition-all duration-300 text-xs font-semibold group"
         >
-          {/* 使用原生 SVG 替代 Lucide 圖標，避開打包錯誤 */}
-          <svg
+          {/* 原生 SVG 避開編譯問題 */}
+          <svg 
             xmlns="http://www.w3.org/2000/svg" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="currentColor" 
-                strokeWidth="2" 
-                strokeLinecap="round" 
-                strokeLinejoin="round" 
-                className="w-3.5 h-3.5 group-hover:scale-110 transition-transform"
-            >
-               <rect width="20" height="20" x="2" y="2" rx="5" ry="5"/>
-               <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
-               <line x1="17.5" x2="17.51" y1="6.5" y2="6.5"/>
-            </svg>
-            <span>Follow Theoretical Finance on IG: <span className="font-bold text-slate-200 group-hover:text-pink-400">@isjustfinance_</span></span>
+            viewBox="0 0 24 24" 
+            fill="none" 
+            stroke="currentColor" 
+            strokeWidth="2" 
+            strokeLinecap="round" 
+            strokeLinejoin="round" 
+            className="w-3.5 h-3.5 group-hover:scale-110 transition-transform"
+          >
+            <rect width="20" height="20" x="2" y="2" rx="5" ry="5"/>
+            <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+            <line x1="17.5" x2="17.51" y1="6.5" y2="6.5"/>
+          </svg>
+          <span>Follow Theoretical Finance on IG: <span className="font-bold text-slate-200 group-hover:text-pink-400">@isjustfinance_</span></span>
         </a>
       </div>
 
