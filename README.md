@@ -1,16 +1,15 @@
-# React + Vite
+# 股價不可微分性質視覺化展示實驗室
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+這是一個基於 **React** 與 **Vite** 建構的動態隨機分析可視化工具。
+專案利用**布朗橋動態中點置換法（Brownian Bridge Midpoint Displacement）**，在微觀尺度下即時生成碎形細節，藉此驗證資產價格在連續時間模型中的核心物理性質。
 
-Currently, two official plugins are available:
+Website: https://wesley1110.github.io/wiener-process-non-differentiable/
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+### 📊 核心功能
+* **標準維納過程 $W(t)$ 與幾何布朗運動 $S(t)$** 雙模式即時切換。
+* **微觀局部斜率監測儀**：捕捉畫面中央相鄰兩點之 $\frac{\Delta Y}{\Delta T}$，親眼見證時間跨度趨近於零時，斜率朝 $\pm\infty$ 劇烈振盪的「處處不可微分」鐵證。
+* **95% 理論擴散邊界**：結合漂移率（Drift）與波動度（Volatility），動態呈現機率密度的擴散封套（Confidence Bands）。
+* 支援滑鼠滾輪以游標為中心進行無窮放大，以及按住滑鼠左鍵進行拖拽平移（Pan）。
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### 📱
+Instagram 財金學術知識帳號：[@isjustfinance_](https://www.instagram.com/isjustfinance_)
