@@ -8,7 +8,7 @@ Website: https://wesley1110.github.io/wiener-process-non-differentiable/
 ### 📊 核心功能
 * **標準維納過程 $W(t)$ 與幾何布朗運動 $S(t)$** 雙模式即時切換。
 * **微觀局部斜率監測儀**：捕捉畫面中央相鄰兩點之 $\frac{\Delta Y}{\Delta T}$，親眼見證時間跨度趨近於零時，斜率朝 $\pm\infty$ 劇烈振盪的「處處不可微分」鐵證。
-* **95% 理論擴散邊界**：結合漂移率（Drift）與波動度（Volatility），動態呈現機率密度的擴散封套（Confidence Bands）。
+* **95% 理論擴散邊界**：結合漂移率（Drift）與波動度（Volatility），動態呈現股價在隨機漫步下，隨時間擴散的 95% 信賴區間。
 * 支援滑鼠滾輪以游標為中心進行無窮放大，以及按住滑鼠左鍵進行拖拽平移（Pan）。
 
 ### 📱
